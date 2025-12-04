@@ -80,7 +80,17 @@ Please refer to the [official SGLang doc](https://docs.sglang.io/basic_usage/sen
 
 ### Benchmark
 
+To benchmark a single batch：
+```
+bash examples/bench_one_batch.sh
+```
 
+To start a server and benchmark：
+```
+bash examples/bench_serving.sh
+```
+
+You can modify the test arguments inside the scripts.
 
 
 ## License

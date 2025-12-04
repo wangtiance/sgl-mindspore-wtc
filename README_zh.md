@@ -84,6 +84,14 @@ bash examples/start_server.sh
 bash examples/bench_one_batch.sh
 ```
 
+测试服务化推理性能：
+```
+bash examples/bench_serving.sh
+```
+
+可以在脚本内修改测试参数。
+
+
 ## 许可证
 
 Apache License 2.0
