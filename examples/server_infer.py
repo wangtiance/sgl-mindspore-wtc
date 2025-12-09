@@ -25,7 +25,6 @@ def main():
             --host 0.0.0.0 \
             --device npu \
             --model-impl mindspore \
-            --max-total-tokens=20000 \
             --attention-backend ascend \
             --mem-fraction-static 0.8 \
             --tp-size 1 \
@@ -36,8 +35,10 @@ def main():
     wait_for_server(f"http://localhost:{port}")
 
     url = f"http://localhost:{port}/generate"
-    data = {"text": "The capital of France is",
-            "sampling_params": {"temperature": 0, "max_new_tokens": 100}}
+    data = {
+        "text": "The capital of France is",
+        "sampling_params": {"temperature": 0, "max_new_tokens": 100},
+    }
 
     response = requests.post(url, json=data)
     print_highlight(response.json())
