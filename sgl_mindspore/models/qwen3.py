@@ -199,9 +199,9 @@ class Qwen3Attention(nn.Cell):
             dim=-1,
         )
 
-        q = q.view(-1, self.head_dim)
-        k = k.view(-1, self.head_dim)
-        v = v.view(-1, self.kv_size // self.tp_size)
+        q = q.view(-1, self.head_dim).contiguous()
+        k = k.view(-1, self.head_dim).contiguous()
+        v = v.view(-1, self.kv_size // self.tp_size).contiguous()
 
         q = self.q_norm(q).view(-1, self.q_size // self.tp_size)
         k = self.k_norm(k).view(-1, self.kv_size // self.tp_size)
@@ -456,6 +456,11 @@ class Qwen3ForCausalLM(MindSporeModelBase):
         )
         os.environ["MS_DISABLE_INTERNAL_KERNELS_LIST"] = "RmsNorm"
 
+    def prepare_inputs(self, forward_batch, model_inputs):
+        if forward_batch.capture_hidden_mode:
+            model_inputs["capture_hidden_mode"] = forward_batch.capture_hidden_mode
+        return model_inputs
+
     def set_model_inputs(self, is_prefill):
         dyn_input_ids = Tensor(shape=[None], dtype=dtype.int32)
         dyn_position_ids = Tensor(shape=[None], dtype=dtype.int64)
@@ -559,21 +564,33 @@ class Qwen3ForCausalLM(MindSporeModelBase):
 
         hidden_states = self.model(**model_inputs)
 
-        aux_hidden_states = None
         if self.capture_aux_hidden_states:
             hidden_states, aux_hidden_states = hidden_states
+            capture_hidden_mode = model_inputs["capture_hidden_mode"]
+            if capture_hidden_mode.need_capture():
+                if capture_hidden_mode.is_full():
+                    aux_hidden_states = mint.cat(aux_hidden_states, dim=-1)
+                elif capture_hidden_mode.is_last():
+                    aux_hidden_states = mint.index_select(
+                        aux_hidden_states, 0, q_seq_lens - 1
+                    )
+                    aux_hidden_states = mint.cat(aux_hidden_states, dim=-1)
+                else:
+                    assert False, "Unsupported capture hidden mode"
 
         # TODO: In pure decode scenarios, cumsum and gather operations will be redundant .
         q_seq_lens = mint.cumsum(q_seq_lens, 0)
         hidden_states = mint.index_select(hidden_states, 0, q_seq_lens - 1)
-        if aux_hidden_states:
-            aux_hidden_states = mint.index_select(aux_hidden_states, 0, q_seq_lens - 1)
 
         logits = self.lm_head(hidden_states)
         if self.tp_size:
             logits = self.all_gather(logits)
         logits = mint.reshape(logits, (-1, logits.shape[-1]))
-        return logits, aux_hidden_states
+
+        if self.capture_aux_hidden_states:
+            return logits, aux_hidden_states
+        else:
+            return logits
 
     def get_embed_and_head(self):
         return self.model.embed_tokens.weight, self.lm_head.weight

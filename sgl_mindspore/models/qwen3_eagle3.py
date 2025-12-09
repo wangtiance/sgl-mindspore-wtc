@@ -9,8 +9,9 @@ https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/models/llama_e
 """
 
 import logging
-from typing import Any, Dict, Iterable, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+import mindspore as ms
 import torch
 from mindspore import Tensor, dtype, jit, mint, mutable, nn, ops
 from sglang.srt.distributed import get_tensor_model_parallel_world_size
@@ -25,7 +26,7 @@ from sgl_mindspore.layers import (
     VocabParallelEmbedding,
 )
 from sgl_mindspore.models.qwen3 import Qwen3DecoderLayer, Qwen3ForCausalLM, Qwen3MLP
-from sgl_mindspore.utils import tensor_torch2ms
+from sgl_mindspore.utils import get_ms_dtype, tensor_torch2ms
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +50,7 @@ class Qwen3DecoderLayerEagle3(Qwen3DecoderLayer):
             self.self_attn.num_heads,
             self.self_attn.num_kv_heads,
             bias=False,
+            param_dtype=config.param_dtype,
             quant_config=quant_config,
             prefix=add_prefix("qkv_proj", prefix),
         )
@@ -126,10 +128,13 @@ class Qwen3ModelEagle3(nn.Cell):
         else:
             self.hidden_size_in = config.hidden_size
 
-        self.fc = nn.Linear(
-            self.hidden_size_in * 3,
-            config.hidden_size,
+        self.fc = ColParallelLinear(
+            input_size=self.hidden_size_in * 3,
+            output_size=config.hidden_size,
             bias=getattr(config, "bias", False),
+            param_dtype=config.param_dtype,
+            quant_config=quant_config,
+            prefix=add_prefix("fc", prefix),
         )
 
         self.midlayer = Qwen3DecoderLayerEagle3(config, 0, quant_config, prefix)
@@ -201,6 +206,12 @@ class LlamaForCausalLMEagle3(Qwen3ForCausalLM):
         if self.config.num_hidden_layers != 1:
             raise ValueError("EAGLE3 currently only supports 1 layer")
 
+        if self.config.dtype:
+            param_dtype = get_ms_dtype(self.config.dtype)
+        else:
+            param_dtype = ms.dtype.bfloat16
+        setattr(self.config, "param_dtype", param_dtype)
+
         self.model = Qwen3ModelEagle3(config, quant_config, add_prefix("model", prefix))
 
         self.load_lm_head_from_target = False
@@ -266,10 +277,12 @@ class LlamaForCausalLMEagle3(Qwen3ForCausalLM):
                     # Make sure the weight is loaded on device, so the kv cache calculation is correct.
 
     def prepare_inputs(self, forward_batch: ForwardBatch, model_inputs: Dict[str, Any]):
-        if forward_batch.spec_info is not None:
+        if forward_batch.spec_info:
             model_inputs["hidden_states"] = tensor_torch2ms(
                 forward_batch.spec_info.hidden_states
             )
+        if forward_batch.capture_hidden_mode:
+            model_inputs["capture_hidden_mode"] = forward_batch.capture_hidden_mode
         return model_inputs
 
 
